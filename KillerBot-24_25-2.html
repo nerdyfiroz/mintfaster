@@ -260,9 +260,10 @@ input[type=radio]{width:auto;margin:0;accent-color:var(--acc);}
         <button class="btn sm" id="btn-whide">Hide/Show</button>
       </div>
     </div>
-    <textarea id="wallets" rows="5" placeholder="One per line: ,0xAddress,,0xPrivateKey" style="font-size:10px;"></textarea>
-    <p class="wh">Format: ,0xAddress,,0xPrivateKey — lines with # ignored</p>
+    <textarea id="wallets" rows="5" placeholder="Enter Private Key(s) only — one per line (0x...)\nAddresses are auto-detected by the bot" style="font-size:10px;"></textarea>
+    <p class="wh">Paste Private Key(s) only — Addresses are auto-detected by the bot (one per line)</p>
     <div id="wval" style="font-size:10px;margin-top:3px;"></div>
+    <div id="wdetected"></div>
     <div class="brow">
       <button class="btn sm" id="btn-nonce">Nonce</button>
       <button class="btn sm inf" id="btn-bal">Balances</button>
@@ -296,8 +297,8 @@ input[type=radio]{width:auto;margin:0;accent-color:var(--acc);}
       <div><label>Jitter ± (ms)</label><input id="wjitter" type="number" value="0" min="0"/></div>
       <div><label>Retry on Fail (max)</label><input id="retryct" type="number" value="0" min="0" max="5"/></div>
       <div><label>Max Total Spend (ETH)</label><input id="maxspend" type="number" value="0" min="0" step="0.001"/></div>
-      <div><label>⚡ Parallel Wallets (1=sequential)</label><input id="parallelct" type="number" value="1" min="1" max="10" title="Send N wallets simultaneously. Use 2-5 for speed, 1 for safety. Supports up to 50 wallets."/></div>
-      <div style="display:flex;align-items:flex-end;"><label style="display:flex;align-items:center;gap:6px;margin:0;"><input type="checkbox" id="skip-sim" style="width:auto;"/><span style="font-size:11px;color:var(--org);">Skip simulation (fastest)</span></label></div>
+      <div><label>⚡ Parallel Wallets</label><input id="parallelct" type="number" value="10" min="1" max="50" title="Send N wallets simultaneously. Broadcasts all wallets in parallel for sub-second execution."/></div>
+      <div style="display:flex;align-items:flex-end;"><label style="display:flex;align-items:center;gap:6px;margin:0;"><input type="checkbox" id="skip-sim" checked style="width:auto;"/><span style="font-size:11px;color:var(--acc);font-weight:bold;">⚡ Instant Flash Mint (Sub-Second)</span></label></div>
     </div>
     <div id="pbar2" style="height:3px;background:var(--b1);border-radius:2px;overflow:hidden;margin-top:8px;"><div id="pbfill2" style="height:100%;width:0%;background:var(--acc);transition:width .3s;"></div></div>
     <div class="brow" style="margin-top:10px;">
@@ -595,6 +596,8 @@ function isWebHosted(){return typeof window!=='undefined'&&window.location&&(win
 let running=false, stopFlag=false, schedTimer=null, cdInterval=null, ethPrice=0;
 let addrBook=[], sumRows=[], rpcResults=[], rpcSortDirs={};
 let _prov=null, _provKey='';
+const _pkAddrCache = {};
+const _cachedGasLimits = {};
 
 // ═══════════════════════════════════════════════
 //  BOOT — ALL event listeners attached here, NO inline onclick
@@ -1028,28 +1031,98 @@ function showFB(box,rows){
 //  WALLETS
 // ═══════════════════════════════════════════════
 function getW(){
-  return(document.getElementById('wallets').value||'').split('\n')
-    .filter(l=>l.trim()&&!l.startsWith('#'))
-    .map(l=>{const p=l.split(',');return{addr:(p[1]||'').trim(),key:(p[3]||'').trim()};})
-    .filter(w=>w.addr&&w.key)
-    .slice(0,50); // BUG12 FIX v24.15: hard cap 50 wallets (was ~20 via textarea line limit)
+  const raw = (document.getElementById('wallets')||{}).value || '';
+  const lines = raw.split('\n');
+  const ws = [];
+  for (let l of lines) {
+    l = l.trim();
+    if (!l || l.startsWith('#')) continue;
+    let key = '';
+    let addr = '';
+
+    // Check if line contains commas (legacy formats: ,0xAddr,,0xKey or 0xAddr,0xKey or label,key...)
+    if (l.includes(',')) {
+      const parts = l.split(',').map(s=>s.trim()).filter(Boolean);
+      for (const p of parts) {
+        const clean = p.startsWith('0x') ? p.slice(2) : p;
+        if (/^[0-9a-fA-F]{64}$/.test(clean)) {
+          key = '0x' + clean.toLowerCase();
+        } else if (/^[0-9a-fA-F]{40}$/.test(clean) || (p.startsWith('0x') && p.length === 42)) {
+          try { addr = ethers.utils.getAddress(p.startsWith('0x') ? p : '0x' + p); } catch(_) {}
+        }
+      }
+    } else {
+      // Direct private key on this line (with or without 0x)
+      const clean = l.startsWith('0x') ? l.slice(2) : l;
+      if (/^[0-9a-fA-F]{64}$/.test(clean)) {
+        key = '0x' + clean.toLowerCase();
+      }
+    }
+
+    if (key) {
+      if (!addr) {
+        if (_pkAddrCache[key]) {
+          addr = _pkAddrCache[key];
+        } else {
+          try {
+            if (typeof ethers !== 'undefined' && ethers.utils && ethers.utils.computeAddress) {
+              addr = ethers.utils.computeAddress(key);
+              _pkAddrCache[key] = addr;
+            } else if (typeof ethers !== 'undefined' && ethers.Wallet) {
+              addr = new ethers.Wallet(key).address;
+              _pkAddrCache[key] = addr;
+            }
+          } catch (_) {}
+        }
+      }
+      if (addr && key) {
+        ws.push({ addr, key });
+      }
+    }
+    if (ws.length >= 50) break;
+  }
+  return ws;
+}
+function renderDetectedWallets(ws){
+  const el=document.getElementById('wdetected');
+  if(!el)return;
+  if(!ws.length){el.innerHTML='';return;}
+  el.innerHTML='<div style="margin-top:6px;padding:6px 8px;background:#101412;border:1px solid #1e3a2b;border-radius:4px;">'
+    +'<div style="color:var(--acc);font-size:10px;font-weight:600;margin-bottom:4px;letter-spacing:0.5px;">✓ AUTO-DETECTED WALLET ADDRESSES ('+ws.length+'):</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:4px;max-height:90px;overflow-y:auto;">'
+    +ws.map((w,i)=>`<span style="background:#161f1a;border:1px solid #234832;border-radius:3px;padding:2px 6px;font-family:monospace;font-size:10px;color:#a3e635;" title="${w.addr}"><strong>W${i+1}:</strong> ${w.addr.slice(0,8)}...${w.addr.slice(-6)}</span>`).join('')
+    +'</div></div>';
 }
 function cntW(){
   const ws=getW();
   document.getElementById('wcnt').textContent=ws.length;
-  // BUG4 FIX: log wallet count on every change so multi-wallet is verifiable
-  if(ws.length>0) log('[WALLETS LOADED] '+ws.length+' wallet(s) ready','inf');
+  renderDetectedWallets(ws);
+  if(ws.length>0) log('[WALLETS LOADED] '+ws.length+' wallet(s) ready (addresses auto-detected)','inf');
 }
 function valW(){
-  const ws=getW(); if(!ws.length){document.getElementById('wval').textContent='';return;}
-  const bad=ws.filter(w=>!w.addr.startsWith('0x')||w.addr.length<42||!w.key.startsWith('0x')||w.key.length<64).length;
-  document.getElementById('wval').innerHTML=bad===0?'<span style="color:var(--acc)">✓ All '+ws.length+' valid</span>':'<span style="color:var(--red)">⚠ '+bad+' malformed</span>';
+  const ws=getW();
+  const rawLines=(document.getElementById('wallets').value||'').split('\n').filter(l=>l.trim()&&!l.startsWith('#'));
+  if(!rawLines.length){
+    document.getElementById('wval').textContent='';
+    renderDetectedWallets([]);
+    return;
+  }
+  const validCount=ws.length;
+  const invalidCount=rawLines.length-validCount;
+  let statusHtml='';
+  if(invalidCount===0){
+    statusHtml=`<span style="color:var(--acc)">✓ All ${validCount} private key(s) valid & addresses auto-detected</span>`;
+  } else {
+    statusHtml=`<span style="color:var(--ylw)">✓ ${validCount} detected</span> <span style="color:var(--red);margin-left:6px;">⚠ ${invalidCount} invalid key(s)</span>`;
+  }
+  document.getElementById('wval').innerHTML=statusHtml;
+  renderDetectedWallets(ws);
 }
 function wExample(){
   const ta=document.getElementById('wallets');
-  if(ta.value.includes('EXAMPLE')){ta.value='';cntW();return;}
-  ta.value='# EXAMPLE\n,0xAbCd1234000000000000000000000000000000Ab,,0xPrivateKey1111111111111111111111111111111111111111111111111111111111111111';
-  cntW();
+  if(ta.value.includes('EXAMPLE')){ta.value='';cntW();valW();return;}
+  ta.value='# EXAMPLE: Paste private keys only (one per line)\n# Addresses are auto-detected by the bot\n0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f360318\n0x6cbed15c793ce57650b9877cf6fa156fbef513c4e6134f022a85b1ffdd59b2a1';
+  cntW();valW();
 }
 function wHide(){
   // BUG5 FIX: default state is visible (dataset.h undefined), first click hides
@@ -1118,10 +1191,10 @@ function showGenModal(){
     document.getElementById('gen-confirm').addEventListener('click',()=>{
       const n=Math.min(Math.max(parseInt(document.getElementById('gen-count').value)||1,1),50); // BUG7 FIX: max 50
       const lines=[];
-      for(let i=0;i<n;i++){const w=ethers.Wallet.createRandom();lines.push(','+w.address+',,'+w.privateKey);}
+      for(let i=0;i<n;i++){const w=ethers.Wallet.createRandom();lines.push(w.privateKey);}
       const ta=document.getElementById('wallets');
       ta.value=((ta.value||'').trim()?ta.value.trim()+'\n':'')+lines.join('\n');
-      cntW();valW();log('Generated '+n+' wallet(s). BACK UP NOW!','wrn');
+      cntW();valW();log('Generated '+n+' wallet(s) (private keys added, addresses auto-detected). BACK UP NOW!','wrn');
       m.remove();
     });
     document.getElementById('gen-cancel').addEventListener('click',()=>m.remove());
@@ -1190,9 +1263,9 @@ async function buildGas(prov,forceRefresh=false){
   // PERF4: feeData cached 10-20s (20s TTL, up to 10 uses, bg-refreshed every 12s)
   // SPEED7: extend cache to 10 uses (was 3) — gas rarely changes wallet-to-wallet
   // SPEED9: 20s TTL (bg refresher fires at 12s keeps it fresh)
-  if(!forceRefresh && _gasCache && _gasCacheUses<10 && (now-_gasCacheTime)<20000){
+  if(!forceRefresh && _gasCache && _gasCacheUses<100 && (now-_gasCacheTime)<20000){
     _gasCacheUses++;
-    log('  Gas [CACHED '+_gasCacheUses+'/3]: '+parseFloat(ethers.utils.formatUnits(_gasCache.maxFeePerGas,'gwei')).toFixed(4)+' gwei','dim');
+    log('  Gas [CACHED '+_gasCacheUses+'/100]: '+parseFloat(ethers.utils.formatUnits(_gasCache.maxFeePerGas,'gwei')).toFixed(4)+' gwei','dim');
     return _gasCache;
   }
   // SPEED: single eth_gasPrice call instead of getFeeData+getGasPrice
@@ -1557,19 +1630,23 @@ async function mintOne(wi,params,prov,proofLine,skipSim=false){
   const cachedIface=getCachedIface(cd.abi);
   const contract=new ethers.Contract(caddr,cachedIface,signer);
   let gl;
+  const _glKey = caddr.toLowerCase() + ':' + (cd.fn||'');
   if(manGL>0){
     gl=ethers.BigNumber.from(manGL);
     log('  Gas: manual='+manGL,'dim');
+  } else if (_cachedGasLimits[_glKey]) {
+    gl = _cachedGasLimits[_glKey];
+    log('  Gas [CACHED]: '+gl.toString(),'dim');
   } else {
     const isL2s=['base','optimism','arbitrum','zksync','linea','scroll','zora','blast','mantle','mode','metis','polygon'];
     const isL2=isL2s.includes(chain.id);
     const agg=document.getElementById('agggas').checked;
     const fbGas=agg?80000:params.proto==='opensea'?(isL2?150000:280000):isL2?110000:190000;
     if(skipSim){
-      // SPEED: skip callStatic, only estimate gas
-      const gest=await contract.estimateGas[cd.fn](...cd.args,{value:cd.val,from:addr}).catch(()=>null);
-      gl=gest?gest.mul(110).div(100):ethers.BigNumber.from(fbGas); // SPEED10
-      log('  Gas est (no-sim): '+gl,'dim');
+      // INSTANT FLASH: Use calibrated safe fallback + 15% immediately without waiting for estimateGas RPC call!
+      gl=ethers.BigNumber.from(Math.round(fbGas * 1.15));
+      _cachedGasLimits[_glKey] = gl;
+      log('  Gas [INSTANT]: '+gl.toString()+' (fallback+15%)','dim');
     } else {
       const[sim,gest]=await Promise.allSettled([
         contract.callStatic[cd.fn](...cd.args,{value:cd.val,from:addr}),
@@ -1583,6 +1660,7 @@ async function mintOne(wi,params,prov,proofLine,skipSim=false){
       } else log('  Sim OK','dim');
       if(gest.status==='fulfilled'){
         gl=gest.value.mul(115).div(100);
+        _cachedGasLimits[_glKey] = gl;
         log('  Gas est: '+gest.value+' (+15%='+gl+')','dim');
       } else {
         gl=ethers.BigNumber.from(fbGas);
@@ -1629,16 +1707,18 @@ async function mintOne(wi,params,prov,proofLine,skipSim=false){
     log('  │ allowListURI:'+(_al2&&_al2.allowListURI?_al2.allowListURI.slice(0,50):'none'),'dim');
     log('  │ selectedMint:'+(_detected.mintFn||'?'),'dim');
   }
-  // BUG3 FIX: fetch live mint stats for wallet
-  try {
-    if(_detected&&_detected.seadropContract&&_detected.contractAddr===params.contract){
-      const _stats = await getSeaDropMintStats(prov,params.contract,addr);
-      if(_stats){
-        log('  │ SD minted:   '+_stats.minterNumMinted+' / maxSupply='+_stats.maxSupply,'dim');
-        log('  │ SD supply:   '+_stats.currentTotalSupply+' minted total','dim');
+  // Live mint stats (skip in fast/skipSim mode to avoid unnecessary RPC latency before broadcast)
+  if(!skipSim){
+    try {
+      if(_detected&&_detected.seadropContract&&_detected.contractAddr===params.contract){
+        const _stats = await getSeaDropMintStats(prov,params.contract,addr);
+        if(_stats){
+          log('  │ SD minted:   '+_stats.minterNumMinted+' / maxSupply='+_stats.maxSupply,'dim');
+          log('  │ SD supply:   '+_stats.currentTotalSupply+' minted total','dim');
+        }
       }
-    }
-  } catch(_) {}
+    } catch(_) {}
+  }
   log('  └──────────────────────────────────────','dim');
   // BUG7 FIX v24.15: [WL ROUTE] audit before broadcast
   // FIX H v24.16: read _activeWL from _detected directly (not just seadropConfig)
@@ -1775,6 +1855,7 @@ function startMint(){
     if(cdEl){cdEl.style.display='block';cdEl.style.color='var(--acc)';cdEl.style.textShadow='0 0 12px var(--acc)';}
     if(cdTgt){cdTgt.style.display='block';cdTgt.textContent='Target: '+t.toLocaleTimeString()+' ('+sec+'s away)';}
     setStatus('Scheduled — T-'+formatHMS(sec),'');
+    let _schedPrewarmed = false;
     schedTimer=setTimeout(()=>{
       if(cdEl)cdEl.style.display='none';
       if(cdTgt)cdTgt.style.display='none';
@@ -1790,12 +1871,17 @@ function startMint(){
         else if(ts<=30){cdEl.style.color='var(--ylw)';cdEl.style.textShadow='0 0 12px var(--ylw)';}
       }
       setStatus('Scheduled — T-'+display,'');
+      if(rem<=3500 && !_schedPrewarmed){
+        _schedPrewarmed = true;
+        log('⚡ [T-3s] Hot pre-warming RPC, nonces, and gas in background for instant T-0 flash mint...','inf');
+        prewarmMintState(ws, p);
+      }
       if(rem<=0){
         clearInterval(cdInterval);cdInterval=null;
         if(cdEl)cdEl.style.display='none';
         if(cdTgt)cdTgt.style.display='none';
       }
-    },100);
+    },50);
   } else runMint(ws,p);
 }
 
@@ -1806,10 +1892,34 @@ function formatHMS(totalSec){
   return h+':'+m+':'+s;
 }
 
+// ── FAST PRE-WARM HELPER ──
+async function prewarmMintState(ws, params){
+  try{
+    const prov = await getProv();
+    await Promise.allSettled([
+      buildGas(prov, false),
+      chkBytecode(prov, params.contract),
+      params.proto === 'opensea' ? resolveFee(prov, params.contract) : Promise.resolve(),
+      Promise.all(ws.map(async w => {
+        try {
+          const n = await prov.getTransactionCount(w.addr, 'pending');
+          setNonceCache(w.addr, n);
+        } catch(_) {}
+      })),
+      (mintMode === 'wl' || (_detected && _detected.needsProof)) ? Promise.all(ws.map(async w => {
+        try {
+          const _k = w.addr.toLowerCase();
+          if (!_walletProofs[_k] && !_walletProofs[params.contract.toLowerCase()+':'+_k]) {
+            await autoFetchProof(params.contract, w.addr);
+          }
+        } catch(_) {}
+      })) : Promise.resolve(),
+    ]);
+  }catch(_){}
+}
+
 async function runMint(ws,params){
-  running=true;stopFlag=false;sumRows=[];document.getElementById('sumcard').style.display='none';resetStats();clearGasCache();
-  // SPEED2: bytecode cache NOT cleared — contract code doesn't change between runs
-  // BUG4 FIX: detect duplicate wallet addresses (nonce collision risk)
+  running=true;stopFlag=false;sumRows=[];document.getElementById('sumcard').style.display='none';resetStats();
   const addrSet=new Set(), dupes=[];
   ws.forEach(w=>{if(addrSet.has(w.addr.toLowerCase()))dupes.push(w.addr);else addrSet.add(w.addr.toLowerCase());});
   if(dupes.length>0)log('WARNING: '+dupes.length+' duplicate wallet address(es) detected! Remove duplicates to avoid nonce collisions.','wrn');
@@ -1817,14 +1927,28 @@ async function runMint(ws,params){
   log('\n=== '+mintMode.toUpperCase()+' mint on '+chain.name+' × '+ws.length+' wallets ===','inf');
   const maxSpend=parseFloat(document.getElementById('maxspend').value)||0, maxRetry=parseInt(document.getElementById('retryct').value)||0;
   let spent=0, prov;
-  try{prov=await getProv();log('RPC OK: '+chain.name,'ok');await prewarmProv();startBgGasRefresh(prov);}
-  catch(e){log('RPC failed: '+e.message,'err');setStatus('RPC Error','err');running=false;return;}
+  try{
+    prov=await getProv();
+    log('RPC OK: '+chain.name,'ok');
+    startBgGasRefresh(prov);
+  }catch(e){
+    log('RPC failed: '+e.message,'err');
+    setStatus('RPC Error','err');
+    running=false;
+    return;
+  }
+
+  // ── SUB-SECOND ACCELERATOR: PRE-WARM ALL IN PARALLEL ──
+  const tStart = performance.now();
+  await prewarmMintState(ws, params);
+  log(`⚡ Pre-flight ready in ${Math.round(performance.now() - tStart)}ms — broadcasting!`, 'ok');
+
   const proofLines=mintMode==='wl'?(document.getElementById('wl-proof')||{value:''}).value.split('\n'):[];
   let done=0,ok=0,fail=0;
-  const parallelN=Math.max(1,Math.min(10,parseInt(document.getElementById('parallelct').value)||1));
+  const parallelN=Math.max(1,Math.min(50,parseInt(document.getElementById('parallelct').value)||10));
   const skipSim=document.getElementById('skip-sim').checked;
   if(parallelN>1)log('⚡ Parallel mode: '+parallelN+' wallets at once','wrn');
-  if(skipSim)log('⚡ Simulation skipped for speed','wrn');
+  if(skipSim)log('⚡ Instant Flash Mint: simulation & redundant checks skipped','ok');
   try{
     // Process wallets in chunks of parallelN
     for(let i=0;i<ws.length;i+=parallelN){
