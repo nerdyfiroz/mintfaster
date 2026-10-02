@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/KillerBot-24_25-2.html" }
+  ]
+}
