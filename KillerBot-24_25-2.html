@@ -201,8 +201,6 @@ input[type=radio]{width:auto;margin:0;accent-color:var(--acc);}
     </div>
     <label>Custom RPC</label>
     <input id="rpccustom" type="text" placeholder="https://..."/>
-    <label>OpenSea API Key</label>
-    <input id="os-api-key" type="password" placeholder="Your OpenSea API key (from Vercel env vars)"/>
     <div class="ch" id="abcol-hdr"><span>▶ Address Book</span><span id="abcol-arrow">Show</span></div>
     <div class="cb" id="abcol-body">
       <div id="ablist"></div>
@@ -592,8 +590,8 @@ const CHAINS=[
 //  STATE
 // ═══════════════════════════════════════════════
 let chain=CHAINS[0], mintMode='public', cTab='OpenSea';
-// ── OpenSea API Key helper ──
-function getOSApiKey(){return(document.getElementById('os-api-key')||{value:''}).value.trim();}
+// ── Web / Proxy Helper (OpenSea API key managed securely via Vercel env vars) ──
+function isWebHosted(){return typeof window!=='undefined'&&window.location&&(window.location.protocol==='http:'||window.location.protocol==='https:');}
 let running=false, stopFlag=false, schedTimer=null, cdInterval=null, ethPrice=0;
 let addrBook=[], sumRows=[], rpcResults=[], rpcSortDirs={};
 let _prov=null, _provKey='';
@@ -606,9 +604,6 @@ document.addEventListener('DOMContentLoaded', function(){
   buildContractUI();
   loadAB(); renderAB();
   restoreSettings();
-  // ── Restore OpenSea API key ──
-  try{const _osKey=localStorage.getItem('kb_os_api_key');if(_osKey){const el=document.getElementById('os-api-key');if(el)el.value=_osKey;}}catch(_){}
-  document.getElementById('os-api-key')?.addEventListener('change',function(){try{localStorage.setItem('kb_os_api_key',this.value.trim());}catch(_){}});
   log('[INIT AUDIT] _simDecoded=1 _routeLocked=1 _signedMintCache=1 _snifferProofs=1 — v24.25 clean build','ok');
   log('Killer Bot v24.25 ⚡ — Perf: parallel proof discovery (1000ms timeout), cache hit <50ms, no proof fetch during autoDetect.','ok');
   fetchPrice();
@@ -3723,28 +3718,47 @@ async function autoFetchProof(contractAddr, walletAddr) {
 
   // ── Helper: fetch via fetch() then XHR fallback, returns parsed JSON or null ──
   async function _hit(url, opts, signal) {
+    const isOS = url.includes('opensea.io');
+    const method = opts&&opts.method||'GET';
+    let fetchUrl = url;
+    let fetchBody = opts&&opts.body ? JSON.stringify(opts.body) : undefined;
+    if (isOS && isWebHosted()) {
+      if (method === 'POST') {
+        fetchUrl = '/api/opensea';
+        fetchBody = JSON.stringify({ url, payload: opts&&opts.body ? opts.body : undefined });
+      } else {
+        fetchUrl = '/api/opensea?url=' + encodeURIComponent(url);
+      }
+    }
     try {
-      const _osKey=typeof getOSApiKey==='function'?getOSApiKey():'';
-      const _headers={'Accept':'application/json','Content-Type':'application/json'};
-      if(_osKey&&url.includes('opensea.io'))_headers['x-api-key']=_osKey;
-      const r = await fetch(url, {
-        method: opts&&opts.method||'GET',
-        headers: _headers,
-        body: opts&&opts.body ? JSON.stringify(opts.body) : undefined,
+      const r = await fetch(fetchUrl, {
+        method,
+        headers: {'Accept':'application/json','Content-Type':'application/json'},
+        body: fetchBody,
         signal,
       });
       if (r.ok) { const t=await r.text(); try { return JSON.parse(t); } catch(_) {} }
-      else { log('  [PROOF HTTP] METHOD='+((opts&&opts.method)||'GET')+' STATUS='+r.status+' URL='+url.slice(0,80), r.status===404?'err':'dim'); }
+      else { log('  [PROOF HTTP] METHOD='+method+' STATUS='+r.status+' URL='+url.slice(0,80), r.status===404?'err':'dim'); }
     } catch(_) {}
     if (signal&&signal.aborted) return null;
     return new Promise(res => {
-      const x=new XMLHttpRequest(); x.open(opts&&opts.method||'GET',url,true);
+      let xhrUrl = url;
+      let xhrBody = opts&&opts.body ? JSON.stringify(opts.body) : null;
+      if (isOS && isWebHosted()) {
+        if (method === 'POST') {
+          xhrUrl = '/api/opensea';
+          xhrBody = JSON.stringify({ url, payload: opts&&opts.body ? opts.body : undefined });
+        } else {
+          xhrUrl = '/api/opensea?url=' + encodeURIComponent(url);
+        }
+      }
+      const x=new XMLHttpRequest(); x.open(method,xhrUrl,true);
       x.setRequestHeader('Accept','application/json');
-      if (opts&&opts.body) x.setRequestHeader('Content-Type','application/json');
-      x.timeout=900;
+      if (xhrBody || (isOS && isWebHosted() && method === 'POST')) x.setRequestHeader('Content-Type','application/json');
+      x.timeout=2500;
       x.onload=()=>{try{res(JSON.parse(x.responseText));}catch(_){res(null);}};
       x.onerror=()=>res(null); x.ontimeout=()=>res(null);
-      x.send(opts&&opts.body?JSON.stringify(opts.body):null);
+      x.send(xhrBody);
     }).catch(()=>null);
   }
 
@@ -5217,15 +5231,13 @@ async function fetchOpenSeaEligibility(contractAddr, walletAddr) {
 
     // Try fetch() first
     let d = null, httpStatus = 0;
+    const targetUrl = isWebHosted() ? ('/api/opensea?url=' + encodeURIComponent(url)) : url;
     try {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 2000); // v24.17: 2s max
-      const _osKey2=typeof getOSApiKey==='function'?getOSApiKey():'';
-      const _hdrs2={'Accept':'application/json'};
-      if(_osKey2)_hdrs2['x-api-key']=_osKey2;
-      const resp = await fetch(url, {
+      const tid = setTimeout(() => ctrl.abort(), 3000);
+      const resp = await fetch(targetUrl, {
         signal: ctrl.signal,
-        headers: _hdrs2,
+        headers: { 'Accept': 'application/json' },
       }).finally(() => clearTimeout(tid));
       httpStatus = resp.status;
       log('  [PROOF RESPONSE] httpStatus='+httpStatus+' url='+url.slice(0,60), resp.ok?'dim':'dim');
@@ -5241,7 +5253,7 @@ async function fetchOpenSeaEligibility(contractAddr, walletAddr) {
     // If fetch failed, try XHR (sometimes succeeds in Android WebView when fetch is blocked)
     if (!d) {
       try {
-        const xr = await _xhrFetch(url);
+        const xr = await _xhrFetch(targetUrl);
         if (xr.ok && xr.data) {
           d = xr.data;
           log('  [PROOF RESPONSE] XHR succeeded (httpStatus='+xr.status+')', 'ok');
@@ -5300,17 +5312,27 @@ async function fetchOpenSeaEligibility(contractAddr, walletAddr) {
     log('  [PROOF FETCH] POST url='+ep.url.slice(0,70), 'dim');
     let d2 = null;
     // Try fetch POST
+    let postTarget = ep.url;
+    const method = ep.body ? 'POST' : 'GET';
+    let postHeaders = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
+    let postBody = ep.body ? JSON.stringify(ep.body) : undefined;
+    if (isWebHosted()) {
+      if (method === 'POST') {
+        postTarget = '/api/opensea';
+        postBody = JSON.stringify({ url: ep.url, payload: ep.body || {} });
+      } else {
+        postTarget = '/api/opensea?url=' + encodeURIComponent(ep.url);
+        postBody = undefined;
+      }
+    }
     try {
       const ctrl2 = new AbortController();
       const tid2 = setTimeout(() => ctrl2.abort(), 6000);
-      const _osKey3=typeof getOSApiKey==='function'?getOSApiKey():'';
-      const _hdrs3={'Accept':'application/json','Content-Type':'application/json'};
-      if(_osKey3)_hdrs3['x-api-key']=_osKey3;
-      const resp2 = await fetch(ep.url, {
-        method: ep.body ? 'POST' : 'GET',
+      const resp2 = await fetch(postTarget, {
+        method,
         signal: ctrl2.signal,
-        headers: _hdrs3,
-        body: ep.body ? JSON.stringify(ep.body) : undefined,
+        headers: postHeaders,
+        body: postBody,
       }).finally(() => clearTimeout(tid2));
       log('  [PROOF RESPONSE] POST httpStatus='+resp2.status, resp2.ok?'dim':'dim');
       if (resp2.ok) {
@@ -5323,7 +5345,13 @@ async function fetchOpenSeaEligibility(contractAddr, walletAddr) {
     // Try XHR POST if fetch failed
     if (!d2 && ep.body) {
       try {
-        const xr2 = await _xhrFetch(ep.url, { method: 'POST', body: JSON.stringify(ep.body) });
+        let xhrUrl = ep.url;
+        let xhrOpts = { method: 'POST', body: JSON.stringify(ep.body) };
+        if (isWebHosted()) {
+          xhrUrl = '/api/opensea';
+          xhrOpts = { method: 'POST', body: JSON.stringify({ url: ep.url, payload: ep.body || {} }) };
+        }
+        const xr2 = await _xhrFetch(xhrUrl, xhrOpts);
         if (xr2.ok && xr2.data) { d2 = xr2.data; log('  [PROOF RESPONSE] POST XHR OK', 'ok'); }
       } catch(e) { log('  [PROOF RESPONSE] POST XHR error: '+e.message.slice(0,40), 'dim'); }
     }
