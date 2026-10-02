@@ -201,6 +201,8 @@ input[type=radio]{width:auto;margin:0;accent-color:var(--acc);}
     </div>
     <label>Custom RPC</label>
     <input id="rpccustom" type="text" placeholder="https://..."/>
+    <label>OpenSea API Key</label>
+    <input id="os-api-key" type="password" placeholder="Your OpenSea API key (from Vercel env vars)"/>
     <div class="ch" id="abcol-hdr"><span>▶ Address Book</span><span id="abcol-arrow">Show</span></div>
     <div class="cb" id="abcol-body">
       <div id="ablist"></div>
@@ -590,6 +592,8 @@ const CHAINS=[
 //  STATE
 // ═══════════════════════════════════════════════
 let chain=CHAINS[0], mintMode='public', cTab='OpenSea';
+// ── OpenSea API Key helper ──
+function getOSApiKey(){return(document.getElementById('os-api-key')||{value:''}).value.trim();}
 let running=false, stopFlag=false, schedTimer=null, cdInterval=null, ethPrice=0;
 let addrBook=[], sumRows=[], rpcResults=[], rpcSortDirs={};
 let _prov=null, _provKey='';
@@ -602,6 +606,9 @@ document.addEventListener('DOMContentLoaded', function(){
   buildContractUI();
   loadAB(); renderAB();
   restoreSettings();
+  // ── Restore OpenSea API key ──
+  try{const _osKey=localStorage.getItem('kb_os_api_key');if(_osKey){const el=document.getElementById('os-api-key');if(el)el.value=_osKey;}}catch(_){}
+  document.getElementById('os-api-key')?.addEventListener('change',function(){try{localStorage.setItem('kb_os_api_key',this.value.trim());}catch(_){}});
   log('[INIT AUDIT] _simDecoded=1 _routeLocked=1 _signedMintCache=1 _snifferProofs=1 — v24.25 clean build','ok');
   log('Killer Bot v24.25 ⚡ — Perf: parallel proof discovery (1000ms timeout), cache hit <50ms, no proof fetch during autoDetect.','ok');
   fetchPrice();
@@ -3717,9 +3724,12 @@ async function autoFetchProof(contractAddr, walletAddr) {
   // ── Helper: fetch via fetch() then XHR fallback, returns parsed JSON or null ──
   async function _hit(url, opts, signal) {
     try {
+      const _osKey=typeof getOSApiKey==='function'?getOSApiKey():'';
+      const _headers={'Accept':'application/json','Content-Type':'application/json'};
+      if(_osKey&&url.includes('opensea.io'))_headers['x-api-key']=_osKey;
       const r = await fetch(url, {
         method: opts&&opts.method||'GET',
-        headers: {'Accept':'application/json','Content-Type':'application/json'},
+        headers: _headers,
         body: opts&&opts.body ? JSON.stringify(opts.body) : undefined,
         signal,
       });
@@ -4318,7 +4328,7 @@ function renderFullEligibility(results) {
     <div style="margin-bottom:6px;border-bottom:1px solid #222;padding-bottom:4px;">
       <div style="color:var(--acc2);font-size:11px;margin-bottom:2px;">W${i+1} ${w.addr.slice(0,12)}...${w.addr.slice(-4)}</div>
       <div class="elig-grid">
-        <div class="elig-cell"><div class="elig-cell-lbl">Balance</div><div class="elig-cell-val" style="color:parseFloat(r.balance)>0.001?'var(--acc)':'var(--red)'">${r.balance} ${chain.sym}</div></div>
+        <div class="elig-cell"><div class="elig-cell-lbl">Balance</div><div class="elig-cell-val" style="color:${parseFloat(r.balance)>0.001?'var(--acc)':'var(--red)'}">${r.balance} ${chain.sym}</div></div>
         <div class="elig-cell"><div class="elig-cell-lbl">WL Status</div><div class="elig-cell-val" style="color:${r.eligibleStr==='Eligible'||r.eligibleStr==='OS Confirmed (API)'?'var(--acc)':r.eligibleStr==='Not Eligible'||r.eligibleStr==='RPC Error'?'var(--red)':'var(--ylw)'};">${r.eligibleStr||'Checking...'}<br/><span style="font-size:9px;color:var(--dim);">${r.eligibilitySource||''}</span></div></div>
         <div class="elig-cell"><div class="elig-cell-lbl">Minted</div><div class="elig-cell-val">${(()=>{const _ms=r.mintedStr||'';return(_ms&&!_ms.includes('undefined')&&!_ms.includes('/ ?')&&!_ms.includes('NaN'))?_ms:String(typeof r.minted==='number'?r.minted:0);})()}</div></div>
         <div class="elig-cell"><div class="elig-cell-lbl">Proof</div><div class="elig-cell-val" style="color:${r.proof?'var(--acc)':_detected.needsProof?'var(--red)':'var(--dim)'};">${r.proofStatus}</div></div>
@@ -5210,9 +5220,12 @@ async function fetchOpenSeaEligibility(contractAddr, walletAddr) {
     try {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), 2000); // v24.17: 2s max
+      const _osKey2=typeof getOSApiKey==='function'?getOSApiKey():'';
+      const _hdrs2={'Accept':'application/json'};
+      if(_osKey2)_hdrs2['x-api-key']=_osKey2;
       const resp = await fetch(url, {
         signal: ctrl.signal,
-        headers: { 'Accept': 'application/json', 'x-api-key': '' },
+        headers: _hdrs2,
       }).finally(() => clearTimeout(tid));
       httpStatus = resp.status;
       log('  [PROOF RESPONSE] httpStatus='+httpStatus+' url='+url.slice(0,60), resp.ok?'dim':'dim');
@@ -5290,10 +5303,13 @@ async function fetchOpenSeaEligibility(contractAddr, walletAddr) {
     try {
       const ctrl2 = new AbortController();
       const tid2 = setTimeout(() => ctrl2.abort(), 6000);
+      const _osKey3=typeof getOSApiKey==='function'?getOSApiKey():'';
+      const _hdrs3={'Accept':'application/json','Content-Type':'application/json'};
+      if(_osKey3)_hdrs3['x-api-key']=_osKey3;
       const resp2 = await fetch(ep.url, {
         method: ep.body ? 'POST' : 'GET',
         signal: ctrl2.signal,
-        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        headers: _hdrs3,
         body: ep.body ? JSON.stringify(ep.body) : undefined,
       }).finally(() => clearTimeout(tid2));
       log('  [PROOF RESPONSE] POST httpStatus='+resp2.status, resp2.ok?'dim':'dim');
