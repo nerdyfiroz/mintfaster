@@ -585,6 +585,8 @@ const CHAINS=[
   {id:'mantle',  name:'Mantle',      rpc:'https://rpc.mantle.xyz',                    chainId:5000,   layer:'L2',scan:'https://mantlescan.xyz/tx/',            sym:'MNT'},
   {id:'mode',    name:'Mode',        rpc:'https://mainnet.mode.network',              chainId:34443,  layer:'L2',scan:'https://modescan.io/tx/',               sym:'ETH'},
   {id:'metis',   name:'Metis',       rpc:'https://andromeda.metis.io/?owner=1088',    chainId:1088,   layer:'L2',scan:'https://andromeda-explorer.metis.io/tx/',sym:'METIS'},
+  {id:'arc',      name:'ARC Mainnet',              rpc:'https://rpc.mainnet.arc.io',                chainId:5042, layer:'L1',scan:'https://explorer.arc.io/tx/',           sym:'USDC'},
+  {id:'robinhood',name:'Robinhood Crypto Network', rpc:'https://rpc.mainnet.chain.robinhood.com',chainId:4663, layer:'L2',scan:'https://robinhoodchain.blockscout.com/tx/',sym:'ETH'},
 ];
 
 // ═══════════════════════════════════════════════
@@ -1302,7 +1304,7 @@ function gasFromData(fd){
     log('  Gas [MANUAL]: pri='+manPri+' max='+manMax+' gwei','dim');
     return{maxPriorityFeePerGas:mxp,maxFeePerGas:mxf};
   }
-  const L2S=['base','optimism','arbitrum','zksync','linea','scroll','zora','blast','mantle','mode','metis','polygon'];
+  const L2S=['base','optimism','arbitrum','zksync','linea','scroll','zora','blast','mantle','mode','metis','polygon','robinhood'];
   const isL2=L2S.includes(chain.id);
   let gp=fd.gasPrice||ethers.utils.parseUnits('0.005','gwei');
   const L2C=ethers.utils.parseUnits('0.01','gwei'), L1C=ethers.utils.parseUnits('100','gwei');
@@ -1638,7 +1640,7 @@ async function mintOne(wi,params,prov,proofLine,skipSim=false){
     gl = _cachedGasLimits[_glKey];
     log('  Gas [CACHED]: '+gl.toString(),'dim');
   } else {
-    const isL2s=['base','optimism','arbitrum','zksync','linea','scroll','zora','blast','mantle','mode','metis','polygon'];
+    const isL2s=['base','optimism','arbitrum','zksync','linea','scroll','zora','blast','mantle','mode','metis','polygon','robinhood'];
     const isL2=isL2s.includes(chain.id);
     const agg=document.getElementById('agggas').checked;
     const fbGas=agg?80000:params.proto==='opensea'?(isL2?150000:280000):isL2?110000:190000;
@@ -4019,6 +4021,8 @@ const EXPLORER_APIS = {
   324:     {url:'https://block-explorer-api.mainnet.zksync.io/api',name:'zkSync Explorer'},
   56:      {url:'https://api.bscscan.com/api',           name:'BscScan'},
   250:     {url:'https://api.ftmscan.com/api',           name:'Ftmscan'},
+  5042:    {url:'https://explorer.arc.io/api',           name:'Arc Explorer'},
+  4663:    {url:'https://robinhoodchain.blockscout.com/api',name:'Robinhood Explorer'},
 };
 
 // ── MULTI-RPC FAILOVER CONFIG ──
@@ -4033,6 +4037,8 @@ const RPC_FALLBACKS = {
   534352: ['https://rpc.scroll.io'],
   324:    ['https://mainnet.era.zksync.io'],
   56:     ['https://bsc-dataseed1.binance.org','https://rpc.ankr.com/bsc'],
+  5042:   ['https://rpc.mainnet.arc.io'],
+  4663:   ['https://rpc.mainnet.chain.robinhood.com'],
 };
 
 let _activeRpcUrl = null;
